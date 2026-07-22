@@ -18,7 +18,7 @@ st.markdown("---")
 
 # UI Separada en 2 partes
 st.markdown("### 1. Plantilla de Destino")
-st.info("Sube el archivo con el formato final deseado (ej. tu archivo Consolidado_Final de diciembre). El sistema leerá las columnas de aquí.")
+st.info("Sube el archivo con el formato final deseado (Ej. 'PLANILLA SUBIREEEEE.xlsx' o tu Consolidado de Diciembre).")
 archivo_plantilla = st.file_uploader("Sube el archivo de Plantilla (Excel)", type=["xlsx", "xls"], key="plantilla")
 
 st.markdown("### 2. Datos del Mes")
@@ -52,8 +52,13 @@ if st.button("Generar Consolidado"):
     else:
         with st.spinner("Procesando archivos y cruzando datos..."):
             try:
-                # 1. Extraer columnas dinámicamente de la plantilla subida
+                # 1. Extraer columnas dinámicamente (Detecta si es PLANILLA SUBIREEEEE o el Consolidado)
                 df_plantilla = pd.read_excel(archivo_plantilla)
+                
+                # Si es la planilla de subida al sistema, las columnas reales están en la fila 3 (index 2)
+                if "Campos Obligatorios" in str(df_plantilla.columns[0]):
+                    df_plantilla = pd.read_excel(archivo_plantilla, header=2)
+                    
                 columnas_objetivo = df_plantilla.columns.tolist()
                 
                 df_libros = []
@@ -75,31 +80,40 @@ if st.button("Generar Consolidado"):
                     
                     # 3. Cruzar Libros con Informes
                     df_merge = pd.merge(df_libro, df_inf, on='Rut Trabajador', how='left') if not df_inf.empty else df_libro.copy()
-                    df_final = pd.DataFrame(columns=columnas_objetivo)
                     
-                    df_final['RUT EMPRESA'] = rut_empresa
-                    df_final['MES'] = mes_input
-                    df_final['AÑO'] = anio_input
+                    # SOLUCIÓN CLAVE 1: Inicializar el DataFrame final con el número exacto de filas de df_merge
+                    df_final = pd.DataFrame(index=df_merge.index, columns=columnas_objetivo)
                     
-                    # 4. Mapeo explícito de variables base
+                    # Ahora sí asignamos variables estáticas a todas las filas
+                    if 'RUT EMPRESA' in df_final.columns: df_final['RUT EMPRESA'] = rut_empresa
+                    if 'Rut Razón Social *' in df_final.columns: df_final['Rut Razón Social *'] = rut_empresa
+                    if 'MES' in df_final.columns: df_final['MES'] = mes_input
+                    if 'AÑO' in df_final.columns: df_final['AÑO'] = anio_input
+                    if 'Año_Mes (aaaamm) *' in df_final.columns: df_final['Año_Mes (aaaamm) *'] = f"{anio_input}{str({'Enero':'01','Febrero':'02','Marzo':'03','Abril':'04','Mayo':'05','Junio':'06','Julio':'07','Agosto':'08','Septiembre':'09','Octubre':'10','Noviembre':'11','Diciembre':'12'}[mes_input])}"
+                    
+                    # 4. Mapeo de variables base (Funciona tanto para Consolidado como para PLANILLA SUBIREEEEE)
                     map_libro = {
-                        'Rut Trabajador': 'Rut Trabajador', 'Apellido Paterno': 'Apellido Paterno', 'Apellido Materno': 'Apellido Materno',
-                        'Nombres': 'Nombres', 'Cargo': 'Cargo', 'Tipo de Contrato': 'Tipo de Contrato', 'N° Dias Trabajados': 'N° Dias Trabajados',
-                        'N° Dias Ausentes': 'N° Dias Ausentes', 'N° Dias Licencia': 'N° Dias Licencia', 'N° Dias Accidentes de Trabajo': 'N° Dias Accidentes de Trabajo',
-                        'N° Cargas Familiares': 'N° Cargas Familiares', 'Sueldo Base': 'Sueldo Base (H)', 'Imponible': 'Total Imponible (H)',
-                        'Aporte Accidentes de Trabajo Mutual': 'Aporte Accidentes de Trabajo Mutual (P)', 'Seguro de Cesantía Empleador': 'Seguro de Cesantía Empleador (P)'
+                        'Rut Trabajador': ['Rut Trabajador', 'Rut *'], 
+                        'Apellido Paterno': ['Apellido Paterno'], 
+                        'Nombres': ['Nombres'], 
+                        'Cargo': ['Cargo'],
+                        'Sueldo Base': ['Sueldo Base (H)', 'Sueldo Base *'],
+                        'Imponible': ['Total Imponible (H)', 'Total Tributable (afecta a impuesto) *', 'Remuneración Imponible *'],
+                        'Aporte Accidentes de Trabajo Mutual': ['Aporte Accidentes de Trabajo Mutual (P)', 'Seguro Accidente de Trabajo *'],
+                        'Seguro de Cesantía Empleador': ['Seguro de Cesantía Empleador (P)', 'Seguro Cesantía Empleador *']
                     }
                     
-                    for src, dst in map_libro.items():
-                        if src in df_merge.columns and dst in df_final.columns: 
-                            df_final[dst] = df_merge[src]
+                    for src, dst_list in map_libro.items():
+                        if src in df_merge.columns:
+                            for dst in dst_list:
+                                if dst in df_final.columns:
+                                    df_final[dst] = df_merge[src]
                             
                     # 5. Mapeo dinámico de Haberes y Descuentos
                     for col in columnas_objetivo:
                         if df_final[col].notna().any(): continue
                         
-                        clean_col = str(col).replace(' (H)', '').replace(' (D)', '').replace(' (P)', '').strip()
-                        
+                        clean_col = str(col).replace(' (H)', '').replace(' (D)', '').replace(' (P)', '').replace(' *', '').strip()
                         match = None
                         for m_col in df_merge.columns:
                             if str(m_col).lower() == clean_col.lower():
@@ -109,14 +123,14 @@ if st.button("Generar Consolidado"):
                         if match:
                             df_final[col] = df_merge[match]
                             
-                    # 6. SOLUCIÓN AL TYPEERROR: Filtrar relleno por tipo de columna
-                    columnas_texto = ['RUT EMPRESA', 'MES', 'Rut Trabajador', 'Apellido Paterno', 'Apellido Materno', 'Nombres', 'Cargo', 'Tipo de Contrato']
+                    # SOLUCIÓN CLAVE 2: Rellenar evitando el TypeError
+                    columnas_texto = ['RUT EMPRESA', 'MES', 'Rut Trabajador', 'Rut *', 'Rut Razón Social *', 'Apellido Paterno', 'Apellido Materno', 'Nombres', 'Cargo', 'Tipo de Contrato', 'Año_Mes (aaaamm) *']
                     
                     for col in df_final.columns:
                         if col in columnas_texto or df_final[col].dtype == 'object':
-                            df_final[col] = df_final[col].fillna("") # Rellenar textos con vacío
+                            df_final[col] = df_final[col].fillna("") # Vacío para texto
                         else:
-                            df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0) # Rellenar números con cero
+                            df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0) # Cero para números
                     
                     # 7. Generar Excel en memoria
                     output = io.BytesIO()
@@ -124,12 +138,12 @@ if st.button("Generar Consolidado"):
                         df_final.to_excel(writer, index=False)
                     output.seek(0)
                     
-                    st.success("¡Consolidado Completo Generado Exitosamente!")
+                    st.success("¡Consolidado Generado con Éxito! Ya puedes descargarlo.")
                     st.download_button(
-                        label="📥 Descargar Consolidado", 
+                        label="📥 Descargar Archivo Final", 
                         data=output, 
-                        file_name=f"Consolidado_Final_{mes_input}_{anio_input}.xlsx"
+                        file_name=f"Resultado_{mes_input}_{anio_input}.xlsx"
                     )
                     
             except Exception as e:
-                st.error(f"Error crítico durante el procesamiento: {str(e)}")
+                st.error(f"Error durante el procesamiento: {str(e)}")
