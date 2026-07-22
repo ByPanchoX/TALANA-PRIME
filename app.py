@@ -6,7 +6,6 @@ import io
 st.set_page_config(page_title="Consolidador de Remuneraciones", layout="wide")
 st.title("Automatización de Consolidado de Remuneraciones")
 
-# Parámetros del mes
 col1, col2 = st.columns(2)
 with col1:
     mes_input = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
@@ -25,7 +24,6 @@ st.info("Sube AQUÍ todos los: Libros de Remuneraciones, Costos por Trabajador, 
 archivos_datos = st.file_uploader("Sube los Datos", type=["xlsx", "xls"], accept_multiple_files=True, key="datos")
 
 def normalize_str(s):
-    """Normaliza textos quitando asteriscos, sufijos y tildes para hacer cruces exactos."""
     s = str(s).replace(' (H)', '').replace(' (D)', '').replace(' (P)', '').replace(' *', '').strip()
     return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8').lower()
 
@@ -59,7 +57,7 @@ if st.button("Generar Consolidado"):
                     df_plantilla = pd.read_excel(archivo_plantilla, header=2)
                 columnas_objetivo = df_plantilla.columns.tolist()
                 
-                # 2. Leer Libros y Costos (El archivo de Costos tiene las leyes patronales que le faltan al Libro)
+                # 2. Leer Libros, Costos e Informes
                 df_bases = []
                 df_infs = []
                 
@@ -73,17 +71,22 @@ if st.button("Generar Consolidado"):
                 if not df_bases:
                     st.error("Error: No se subió ningún Libro de Remuneraciones ni Costo por Trabajador.")
                 else:
-                    # Agrupar por RUT para unir la info del Libro y del Costo por Trabajador
+                    # Agrupar base asegurando no perder nulos (Prioriza datos limpios del Libro)
                     df_base = pd.concat(df_bases, ignore_index=True)
                     df_base = df_base.groupby('Rut Trabajador').first().reset_index()
                     
                     df_inf = pd.concat(df_infs, ignore_index=True).groupby('Rut Trabajador').sum().reset_index() if df_infs else pd.DataFrame()
+                    
+                    # CORRECCIÓN CLAVE: Evitar sufijos _x y _y eliminando colisiones
+                    if not df_inf.empty:
+                        cols_duplicadas = [c for c in df_inf.columns if c in df_base.columns and c != 'Rut Trabajador']
+                        df_inf = df_inf.drop(columns=cols_duplicadas)
+                        
                     df_merge = pd.merge(df_base, df_inf, on='Rut Trabajador', how='left') if not df_inf.empty else df_base.copy()
                     
-                    # 3. Inicializar el DF final con las columnas correctas
+                    # 3. Inicializar DF Final
                     df_final = pd.DataFrame(index=df_merge.index, columns=columnas_objetivo)
                     
-                    # RUT Empresa y Fecha
                     if 'RUT EMPRESA' in df_final.columns: df_final['RUT EMPRESA'] = rut_empresa
                     if 'Rut Razón Social *' in df_final.columns: df_final['Rut Razón Social *'] = rut_empresa
                     if 'MES' in df_final.columns: df_final['MES'] = mes_input
@@ -92,7 +95,7 @@ if st.button("Generar Consolidado"):
                     meses_num = {'Enero':'01','Febrero':'02','Marzo':'03','Abril':'04','Mayo':'05','Junio':'06','Julio':'07','Agosto':'08','Septiembre':'09','Octubre':'10','Noviembre':'11','Diciembre':'12'}
                     if 'Año_Mes (aaaamm) *' in df_final.columns: df_final['Año_Mes (aaaamm) *'] = f"{anio_input}{meses_num[mes_input]}"
                     
-                    # 4. MAPEO UNIVERSAL (Funciona con la Plantilla Subire y con el Consolidado Final Antiguo)
+                    # 4. MAPEO UNIVERSAL
                     map_universal = {
                         'Rut Trabajador': ['Rut Trabajador', 'Rut *'],
                         'Apellido Paterno': ['Apellido Paterno'],
@@ -123,14 +126,13 @@ if st.button("Generar Consolidado"):
                         'Cargas Familiares': ['Asignación familiar y Maternal', 'Cargas Familiares Normales (H)']
                     }
                     
-                    # Aplicar Diccionario Base
                     for src, dst_list in map_universal.items():
                         if src in df_merge.columns:
                             for dst in dst_list:
                                 if dst in df_final.columns:
                                     df_final[dst] = df_merge[src]
                                     
-                    # 5. Mapeo Dinámico (Para atrapar Bonos, Viáticos, y el resto de la lista)
+                    # 5. Mapeo Dinámico para Bonos/Viáticos
                     for col in columnas_objetivo:
                         if df_final[col].notna().any(): continue
                         clean_col = normalize_str(col)
@@ -144,7 +146,7 @@ if st.button("Generar Consolidado"):
                         if match:
                             df_final[col] = df_merge[match]
                             
-                    # 6. Limpieza final (Textos vacíos, números en 0)
+                    # 6. Limpieza final
                     columnas_texto = ['RUT EMPRESA', 'MES', 'Rut Trabajador', 'Rut *', 'Rut Razón Social *', 'Apellido Paterno', 'Apellido Materno', 'Nombres', 'Cargo', 'Tipo de Contrato', 'Año_Mes (aaaamm) *']
                     for col in df_final.columns:
                         if col in columnas_texto or df_final[col].dtype == 'object':
@@ -158,7 +160,7 @@ if st.button("Generar Consolidado"):
                         df_final.to_excel(writer, index=False)
                     output.seek(0)
                     
-                    st.success("¡Datos cruzados exitosamente! Todo listo para subir al sistema.")
+                    st.success("¡Datos cruzados exitosamente! La cuadratura ahora será perfecta.")
                     st.download_button(
                         label="📥 Descargar Excel Listo", 
                         data=output, 
