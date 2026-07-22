@@ -1,66 +1,85 @@
 import streamlit as st
 import pandas as pd
-import unicodedata
-import io
+from io import BytesIO
 
-st.set_page_config(page_title="Consolidador de Remuneraciones", layout="wide")
-st.title("Automatización de Consolidado de Remuneraciones (Formato Estricto Talana)")
+from utils import procesar_archivos
 
-col1, col2 = st.columns(2)
-with col1:
-    mes_input = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-with col2:
-    anio_input = st.number_input("Año", min_value=2020, max_value=2050, value=2026)
+st.set_page_config(
+    page_title="Consolidador Talana",
+    layout="wide",
+    page_icon="📄"
+)
 
-rut_empresa = st.text_input("RUT de la Empresa", value="76.455.680-1")
-st.markdown("---")
+st.title("📄 Consolidador de Remuneraciones Talana")
 
-st.markdown("### 1. Plantilla de Destino")
-st.info("Sube la plantilla exacta y original descargada desde Talana (ej. PLANILLA SUBIR1.xlsx).")
-archivo_plantilla = st.file_uploader("Sube la Plantilla (Excel)", type=["xlsx", "xls"], key="plantilla")
+st.markdown("""
+Esta aplicación consolida automáticamente los archivos de:
 
-st.markdown("### 2. Datos del Mes")
-st.info("Sube AQUÍ todos los archivos del mes: Libros de Remuneraciones, Costos por Trabajador, e Informes de Haberes.")
-archivos_datos = st.file_uploader("Sube los Datos Múltiples (Excel)", type=["xlsx", "xls"], accept_multiple_files=True, key="datos")
+- Libro de Remuneraciones
+- Costo por Trabajador
+- Informe Haberes y Descuentos
 
-def normalize_str(s):
-    if not isinstance(s, str):
-        return ""
-    s = s.replace(' (H)', '').replace(' (D)', '').replace(' (P)', '').replace(' *', '').strip()
-    return unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8').lower()
+de ENAP e INGEMARS para generar el archivo compatible con Talana.
+""")
 
-def procesar_informe_haberes(df):
-    data = []
-    categoria_actual = None
-    for index, row in df.iterrows():
-        col0 = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-        rut = str(row.get('Rut', '')).strip() if 'Rut' in row and pd.notna(row['Rut']) else ""
-        monto = row.get('Monto', 0)
-        
-        if col0 and col0.lower() != 'nan' and not col0.lower().startswith('total'):
-            categoria_actual = col0
-            
-        if rut and rut.lower() != 'nan':
-            if categoria_actual:
-                data.append({'Rut Trabajador': rut.replace('.', ''), 'Categoria': categoria_actual, 'Monto': monto})
-                
-    if not data: return pd.DataFrame()
-    return pd.DataFrame(data).pivot_table(index='Rut Trabajador', columns='Categoria', values='Monto', aggfunc='sum').reset_index()
+st.divider()
 
-if st.button("Generar Consolidado para Talana"):
-    if not archivo_plantilla or not archivos_datos:
-        st.warning("Faltan archivos por subir en los pasos 1 y 2.")
-    else:
-        with st.spinner("Procesando y cuadrando datos para Talana..."):
-            try:
-                # 1. Leer Plantilla Estricta
-                df_plantilla_raw = pd.read_excel(archivo_plantilla, header=None)
-                
-                # Identificar la fila de encabezados (la que tiene los nombres de las columnas)
-                header_row_idx = 2 if "Campos Obligatorios" in str(df_plantilla_raw.iloc[0, 0]) else 0
-                cols_in_sheet = df_plantilla_raw.iloc[header_row_idx].tolist()
-                
-                # Guardar las dos primeras filas decorativas de Talana para pegarlas al final
+plantilla = st.file_uploader(
+    "Seleccione la plantilla Talana",
+    type=["xlsx"]
+)
+
+archivos = st.file_uploader(
+    "Seleccione TODOS los archivos del mes",
+    type=["xlsx"],
+    accept_multiple_files=True
+)
+
+if plantilla is not None and len(archivos) > 0:
+
+    if st.button("Procesar archivos", type="primary"):
+
+        barra = st.progress(0, text="Leyendo archivos...")
+
+        try:
+
+            resultado = procesar_archivos(
+                plantilla,
+                archivos,
+                barra
+            )
+
+            barra.progress(
+                100,
+                text="Proceso terminado"
+            )
+
+            st.success("Consolidación completada correctamente.")
+
+            st.dataframe(resultado.head(30))
+
+            output = BytesIO()
+
+            with pd.ExcelWriter(
+                output,
+                engine="openpyxl"
+            ) as writer:
+
+                resultado.to_excel(
+                    writer,
+                    index=False
+                )
+
+            st.download_button(
+                "📥 Descargar Consolidado",
+                output.getvalue(),
+                file_name="Consolidado_Talana.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        except Exception as e:
+
+            st.error(str(e))                # Guardar las dos primeras filas decorativas de Talana para pegarlas al final
                 encabezados_talana = df_plantilla_raw.iloc[:header_row_idx].copy()
                 
                 # 2. Leer Libros y Haberes
